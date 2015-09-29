@@ -96,6 +96,12 @@ DEFINE_PER_CPU(unsigned long, process_counts) = 0;
 
 __cacheline_aligned DEFINE_RWLOCK(tasklist_lock);  /* outer */
 
+/** FGAUD **/
+// Allow module to set a callback called whenever a new task is created
+clone_callback_t clone_callback = NULL;
+EXPORT_SYMBOL(clone_callback);
+/****/
+
 #ifdef CONFIG_PROVE_RCU
 int lockdep_tasklist_lock_is_held(void)
 {
@@ -480,15 +486,24 @@ fail_nomem:
 
 static inline int mm_alloc_pgd(struct mm_struct *mm)
 {
-	mm->pgd = pgd_alloc(mm);
-	if (unlikely(!mm->pgd))
+	mm->pgd_master = pgd_alloc(mm);
+	if (unlikely(!mm->pgd_master))
 		return -ENOMEM;
+
 	return 0;
 }
 
 static inline void mm_free_pgd(struct mm_struct *mm)
 {
-	pgd_free(mm, mm->pgd);
+   int node;
+
+	pgd_free(mm, mm->pgd_master);
+
+   for_each_online_node(node) {
+      if(mm->pgd_node[node]) {
+         pgd_free(mm, mm->pgd_node[node]);
+      }
+   }
 }
 #else
 #define dup_mmap(mm, oldmm)	(0)
@@ -537,6 +552,11 @@ static struct mm_struct *mm_init(struct mm_struct *mm, struct task_struct *p)
 	spin_lock_init(&mm->page_table_lock);
 	mm_init_aio(mm);
 	mm_init_owner(mm, p);
+
+   /** Fabien: Make sure that everything is initialized properly **/
+   memset(mm->pgd_node, 0, MAX_NUMNODES * sizeof(pgd_t*));
+   mm->replicated_mm = 0;
+   /***/
 
 	if (likely(!mm_alloc_pgd(mm))) {
 		mm->def_flags = 0;
@@ -1614,6 +1634,12 @@ long do_fork(unsigned long clone_flags,
 			init_completion(&vfork);
 			get_task_struct(p);
 		}
+
+      /** FGAUD **/
+      if(clone_callback) {
+         clone_callback(p, 1);
+      }
+      /****/
 
 		wake_up_new_task(p);
 

@@ -266,8 +266,7 @@ SYSCALL_DEFINE1(brk, unsigned long, brk)
 	unsigned long min_brk;
 	bool populate;
 
-	down_write(&mm->mmap_sem);
-
+	unsigned long duration = down_write(&mm->mmap_sem);
 #ifdef CONFIG_COMPAT_BRK
 	/*
 	 * CONFIG_COMPAT_BRK can still be overridden by setting
@@ -321,11 +320,15 @@ set_brk:
 	up_write(&mm->mmap_sem);
 	if (populate)
 		mm_populate(oldbrk, newbrk - oldbrk);
+
+   INCR_REP_STAT_VALUE(time_spent_brk, duration);
 	return brk;
 
 out:
 	retval = mm->brk;
 	up_write(&mm->mmap_sem);
+
+   INCR_REP_STAT_VALUE(time_spent_brk, duration);
 	return retval;
 }
 
@@ -2546,9 +2549,12 @@ int vm_munmap(unsigned long start, size_t len)
 	int ret;
 	struct mm_struct *mm = current->mm;
 
-	down_write(&mm->mmap_sem);
+	unsigned long duration = down_write(&mm->mmap_sem);
 	ret = do_munmap(mm, start, len);
 	up_write(&mm->mmap_sem);
+
+   INCR_REP_STAT_VALUE(time_spent_munmap, duration);
+
 	return ret;
 }
 EXPORT_SYMBOL(vm_munmap);
@@ -2670,12 +2676,15 @@ unsigned long vm_brk(unsigned long addr, unsigned long len)
 	unsigned long ret;
 	bool populate;
 
-	down_write(&mm->mmap_sem);
+	unsigned long duration = down_write(&mm->mmap_sem);
+
 	ret = do_brk(addr, len);
 	populate = ((mm->def_flags & VM_LOCKED) != 0);
 	up_write(&mm->mmap_sem);
 	if (populate)
 		mm_populate(addr, len);
+
+   INCR_REP_STAT_VALUE(time_spent_brk, duration);
 	return ret;
 }
 EXPORT_SYMBOL(vm_brk);
@@ -2726,7 +2735,8 @@ void exit_mmap(struct mm_struct *mm)
 	}
 	vm_unacct_memory(nr_accounted);
 
-	WARN_ON(mm->nr_ptes > (FIRST_USER_ADDRESS+PMD_SIZE-1)>>PMD_SHIFT);
+   //FIXME -- Replication issue
+	//WARN_ON(mm->nr_ptes > (FIRST_USER_ADDRESS+PMD_SIZE-1)>>PMD_SHIFT);
 }
 
 /* Insert vm structure into process list sorted by address

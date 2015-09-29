@@ -42,6 +42,12 @@
 #define CREATE_TRACE_POINTS
 #include <trace/events/migrate.h>
 
+#include <linux/replicate.h>
+#include <linux/carrefour-hooks.h>
+
+#include <linux/mmu_notifier.h>
+
+
 #include "internal.h"
 
 /*
@@ -708,10 +714,22 @@ static int move_to_new_page(struct page *newpage, struct page *page,
 
 	if (rc != MIGRATEPAGE_SUCCESS) {
 		newpage->mapping = NULL;
+      memset(&newpage->stats, 0, sizeof(perpage_stats_t));
 	} else {
+
 		if (remap_swapcache)
 			remove_migration_ptes(page, newpage);
 		page->mapping = NULL;
+
+
+      /** The migration was successful **/
+#if ENABLE_MIGRATION_STATS
+      newpage->stats.nr_migrations++;
+
+      /*if(newpage->stats.nr_migrations > 1) {
+         printk("Page %p has been migrated %lu times\n", page_address(newpage), (unsigned long) newpage->stats.nr_migrations);
+      }*/
+#endif
 	}
 
 	unlock_page(newpage);
@@ -837,6 +855,9 @@ static int __unmap_and_move(struct page *page, struct page *newpage,
 		}
 		goto skip_unmap;
 	}
+
+   /** Makes sure that stats will be synchronized **/
+   newpage->stats = page->stats;
 
 	/* Establish migration ptes or remove ptes */
 	try_to_unmap(page, TTU_MIGRATION|TTU_IGNORE_MLOCK|TTU_IGNORE_ACCESS);
@@ -1134,6 +1155,7 @@ static int do_move_page_to_node_array(struct mm_struct *mm,
 	for (pp = pm; pp->node != MAX_NUMNODES; pp++) {
 		struct vm_area_struct *vma;
 		struct page *page;
+      int current_node;
 
 		err = -EFAULT;
 		vma = find_vma(mm, pp->addr);
@@ -1154,6 +1176,11 @@ static int do_move_page_to_node_array(struct mm_struct *mm,
 		if (PageReserved(page))
 			goto put_and_set;
 
+      /* Don't want to migrate a replicated page */
+      if (PageReplication(page)) {
+         goto put_and_set;
+      }
+
 		pp->page = page;
 		err = page_to_nid(page);
 
@@ -1163,7 +1190,9 @@ static int do_move_page_to_node_array(struct mm_struct *mm,
 			 */
 			goto put_and_set;
 
+      current_node = err;
 		err = -EACCES;
+
 		if (page_mapcount(page) > 1 &&
 				!migrate_all)
 			goto put_and_set;
@@ -1458,7 +1487,8 @@ int migrate_vmas(struct mm_struct *mm, const nodemask_t *to,
  	return err;
 }
 
-#ifdef CONFIG_NUMA_BALANCING
+#if 1
+//#ifdef CONFIG_NUMA_BALANCING
 /*
  * Returns true if this is a safe migration target node for misplaced NUMA
  * pages. Currently it only checks the watermarks which crude
@@ -1538,6 +1568,10 @@ bool numamigrate_update_ratelimit(pg_data_t *pgdat, unsigned long nr_pages)
 {
 	bool rate_limited = false;
 
+   if(1) {
+      return false;
+   }
+
 	/*
 	 * Rate-limit the amount of data that is being migrated to a node.
 	 * Optimal placement is no good if the memory bus is saturated and
@@ -1606,7 +1640,10 @@ int migrate_misplaced_page(struct page *page, int node)
 	pg_data_t *pgdat = NODE_DATA(node);
 	int isolated;
 	int nr_remaining;
+   unsigned long start, end;
 	LIST_HEAD(migratepages);
+
+   rdtscll(start);
 
 	/*
 	 * Don't migrate pages that are mapped in multiple processes.
@@ -1633,18 +1670,30 @@ int migrate_misplaced_page(struct page *page, int node)
 	if (nr_remaining) {
 		putback_lru_pages(&migratepages);
 		isolated = 0;
-	} else
+	} else {
 		count_vm_numa_event(NUMA_PAGE_MIGRATE);
+      INCR_REP_STAT_VALUE(migr_4k_from_to_node[page_to_nid(page)][node], 1);
+
+   }
 	BUG_ON(!list_empty(&migratepages));
+
+   rdtscll(end);
+   INCR_MIGR_STAT_VALUE(4k, (end - start), isolated);
+
 	return isolated;
 
 out:
 	put_page(page);
+
+   rdtscll(end);
+   INCR_MIGR_STAT_VALUE(4k, (end - start), 0);
+
 	return 0;
 }
 #endif /* CONFIG_NUMA_BALANCING */
 
-#if defined(CONFIG_NUMA_BALANCING) && defined(CONFIG_TRANSPARENT_HUGEPAGE)
+#if defined(CONFIG_TRANSPARENT_HUGEPAGE)
+//#if defined(CONFIG_NUMA_BALANCING) && defined(CONFIG_TRANSPARENT_HUGEPAGE)
 /*
  * Migrates a THP to a given target node. page must be locked and is unlocked
  * before returning.
@@ -1661,6 +1710,14 @@ int migrate_misplaced_transhuge_page(struct mm_struct *mm,
 	struct page *new_page = NULL;
 	struct mem_cgroup *memcg = NULL;
 	int page_lru = page_is_file_cache(page);
+
+   /** FGAUD **/
+	int current_node = page_to_nid(page);
+   unsigned long start, end;
+
+   unsigned migrated = 0;
+
+   rdtscll(start);
 
 	/*
 	 * Don't migrate pages that are mapped in multiple processes.
@@ -1738,6 +1795,12 @@ int migrate_misplaced_transhuge_page(struct mm_struct *mm,
 	entry = pmd_mkhuge(entry);
 
 	pmdp_clear_flush(vma, haddr, pmd);
+
+#if ENABLE_MIGRATION_STATS
+   new_page->stats = page->stats;
+   new_page->stats.nr_migrations++;
+#endif
+
 	set_pmd_at(mm, haddr, pmd, entry);
 	page_add_new_anon_rmap(new_page, vma, haddr);
 	update_mmu_cache_pmd(vma, address, &entry);
@@ -1758,9 +1821,17 @@ int migrate_misplaced_transhuge_page(struct mm_struct *mm,
 	count_vm_events(PGMIGRATE_SUCCESS, HPAGE_PMD_NR);
 	count_vm_numa_events(NUMA_PAGE_MIGRATE, HPAGE_PMD_NR);
 
+   /** FGAUD: Stats **/
+   migrated = 1;
+   INCR_REP_STAT_VALUE(migr_2M_from_to_node[current_node][node], 1);
+
 	mod_zone_page_state(page_zone(page),
 			NR_ISOLATED_ANON + page_lru,
 			-HPAGE_PMD_NR);
+
+   rdtscll(end);
+   INCR_MIGR_STAT_VALUE(2M, (end - start), migrated);
+
 	return isolated;
 
 out_fail:
@@ -1772,6 +1843,10 @@ out_dropref:
 
 	unlock_page(page);
 	put_page(page);
+
+   rdtscll(end);
+   INCR_MIGR_STAT_VALUE(2M, (end - start), 0);
+
 	return 0;
 }
 #endif /* CONFIG_NUMA_BALANCING */

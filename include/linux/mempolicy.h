@@ -126,6 +126,11 @@ struct shared_policy {
 };
 
 int vma_dup_policy(struct vm_area_struct *src, struct vm_area_struct *dst);
+
+/* JRF */
+struct page *alloc_page_interleave(gfp_t gfp, unsigned order,
+					unsigned nid);
+
 void mpol_shared_policy_init(struct shared_policy *sp, struct mempolicy *mpol);
 int mpol_set_shared_policy(struct shared_policy *info,
 				struct vm_area_struct *vma,

@@ -505,6 +505,11 @@ static int queue_pages_pte_range(struct vm_area_struct *vma, pmd_t *pmd,
 		 */
 		if (PageReserved(page))
 			continue;
+
+      if (PageReplication(page)) { // We don't want to migrate or bind replicated pages
+         continue;
+      }
+
 		nid = page_to_nid(page);
 		if (node_isset(nid, *nodes) == !!(flags & MPOL_MF_INVERT))
 			continue;
@@ -1993,7 +1998,8 @@ out:
 
 /* Allocate a page in interleaved policy.
    Own path because it needs to do special accounting. */
-static struct page *alloc_page_interleave(gfp_t gfp, unsigned order,
+/* JRF: make non-static */
+struct page *alloc_page_interleave(gfp_t gfp, unsigned order,
 					unsigned nid)
 {
 	struct zonelist *zl;
@@ -2052,9 +2058,16 @@ retry_cpuset:
 
 		return page;
 	}
-	page = __alloc_pages_nodemask(gfp, order,
-				      policy_zonelist(gfp, pol, node),
-				      policy_nodemask(gfp, pol));
+   /* BLEPERS: ignore mempolicy for HUGE PAGES */
+   if(order == HPAGE_PMD_ORDER) {
+      page = __alloc_pages_nodemask(gfp, order,
+                     node_zonelist(node, gfp),
+                     policy_nodemask(gfp, pol));
+   } else {
+      page = __alloc_pages_nodemask(gfp, order,
+                     policy_zonelist(gfp, pol, node),
+                     policy_nodemask(gfp, pol));
+   }
 	if (unlikely(mpol_needs_cond_ref(pol)))
 		__mpol_put(pol);
 	if (unlikely(!put_mems_allowed(cpuset_mems_cookie) && !page))

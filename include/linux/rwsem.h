@@ -16,6 +16,8 @@
 
 #include <linux/atomic.h>
 
+#include <linux/replicate-options.h>
+
 struct rw_semaphore;
 
 #ifdef CONFIG_RWSEM_GENERIC_SPINLOCK
@@ -28,6 +30,10 @@ struct rw_semaphore {
 	struct list_head	wait_list;
 #ifdef CONFIG_DEBUG_LOCK_ALLOC
 	struct lockdep_map	dep_map;
+#endif
+
+#if WITH_DEBUG_LOCKS
+   void* owner;
 #endif
 };
 
@@ -87,7 +93,8 @@ extern int down_read_trylock(struct rw_semaphore *sem);
 /*
  * lock for writing
  */
-extern void down_write(struct rw_semaphore *sem);
+//extern void down_write(struct rw_semaphore *sem);
+extern unsigned long down_write(struct rw_semaphore *sem);
 
 /*
  * trylock for writing -- returns 1 if successful, 0 if contention
