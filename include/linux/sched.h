@@ -1577,6 +1577,25 @@ struct task_struct {
 #ifdef CONFIG_UPROBES
 	struct uprobe_task *utask;
 #endif
+
+   u64 magic_number;
+   u64 last_seen_time;
+   u64 last_seen_exec;
+   u64 last_seen_iteration;
+   u64 last_seen_weight;
+
+#if WITH_DEBUG_LOCKS
+   // This is probably redundant with lockdep, but much simpler (and a way more limited)
+   void *                rw_lock_fun;
+   struct rw_semaphore * rw_lock_sem_wait;
+   struct rw_semaphore * rw_lock_sem_owns;
+   int                   rw_lock_type; //0 - read, 1 - write
+
+   void *                spinlock_fun;
+   raw_spinlock_t *      spinlock_lock_wait;
+   raw_spinlock_t *      spinlock_lock_owns;
+#endif
+
 };
 
 /* Future-safe accessor for struct task_struct's cpus_allowed. */
@@ -2283,6 +2302,11 @@ extern int do_execve(const char *,
 extern long do_fork(unsigned long, unsigned long, unsigned long, int __user *, int __user *);
 struct task_struct *fork_idle(int);
 extern pid_t kernel_thread(int (*fn)(void *), void *arg, unsigned long flags);
+
+/** FGAUD **/
+typedef void (*clone_callback_t)(struct task_struct*, int clone);
+extern clone_callback_t clone_callback;
+/***********/
 
 extern void set_task_comm(struct task_struct *tsk, char *from);
 extern char *get_task_comm(char *to, struct task_struct *tsk);
